@@ -1,0 +1,254 @@
+
+rm(list=ls())
+
+options(max.print=1000)
+install.packages("tidyverse")
+library(tidyverse)
+library(tidyr)
+library(ggplot2)
+library(stats)
+library(dplyr)
+
+a <- read.csv("/Users/apple/Desktop/Biostats - RWD drug efficacy/Patient_characteristics.csv")
+
+b <- read.csv("/Users/apple/Desktop/Biostats - RWD drug efficacy/Event_duration.csv")
+
+df <- merge (a,b,by=c('patient_id'))
+df1<- subset(df,select=-c(treatment_variable.y,Diag_Score_1,Diag_Score_2))
+ 
+names(df1)[names(df1) == 'treatment_variable.x'] <- 'treatment_variable'
+names(df1)[names(df1) == 'Bleeding_event..1.event..0.censored.'] <- 'bleeding_event'
+install.packages('fastDummies')
+library('fastDummies')
+df2 <- dummy_cols(df1, select_columns = c('other_drugs_1','other_drugs_2','other_drugs_3','other_drugs_4','other_drugs_5','other_drugs_6','other_drugs_7','other_drugs_8','diagnosis_1','diagnosis_2','diagnosis_3','diagnosis_4','diagnosis_5','diagnosis_6','diagnosis_7','diagnosis_8','diagnosis_9','diagnosis_10','diagnosis_11','diagnosis_12','diagnosis_13','diagnosis_14','diagnosis_15'),
+remove_selected_columns = TRUE,
+                   remove_first_dummy = TRUE)
+
+names(df2)[15:37] <- c('other_drugs_1','other_drugs_2','other_drugs_3','other_drugs_4','other_drugs_5','other_drugs_6','other_drugs_7','other_drugs_8','diagnosis_1','diagnosis_2','diagnosis_3','diagnosis_4','diagnosis_5','diagnosis_6','diagnosis_7','diagnosis_8','diagnosis_9','diagnosis_10','diagnosis_11','diagnosis_12','diagnosis_13','diagnosis_14','diagnosis_15')
+
+df2$treatment_variable =ifelse(df2$treatment_variable=='Drug_B',1,0)
+
+#descriptive status before matching
+
+df2 %>% 
+   group_by(bleeding_event)%>% 
+   summarise(freq = n()) %>%
+   mutate(percentage = round(freq / sum(freq), 3))
+
+df2 %>% 
+   group_by(bleeding_event)%>% 
+   count(treatment_variable)
+   
+sd(df2[df2$treatment_variable == '1', 'lab_6'],na.rm=TRUE)
+
+#check for imbalance between the unmatched dataset: t-test for continous variable and chi-square test for categorical variable
+res <- t.test(lab_8~treatment_variable,data=df2,var.equal = TRUE)
+res
+chisq.test(df2$treatment_variable, df2$diagnosis_15, correct=FALSE)
+
+#check for column missing
+colmissing<-apply(df2,2,function(x){sum(is.na(x))})
+colmissing
+
+#drop lab 2,3,4,5 becuase they have >40% of missing value
+drops <- c("lab_2", "lab_3", "lab_4", "lab_5")
+df3<- df2[ , !(names(df2) %in% drops)]
+
+# fill null with mean of biomarkers by age group
+summary(df3$age)
+library(dtplyr)
+df3 <- df3 %>% mutate(agegroup = case_when(age >= 90  & age <= 103 ~ '8',
+                                           age >= 80  & age <= 89 ~ '7',
+                                            age >= 70  & age <= 79 ~ '6',
+                                           age >= 60  & age <= 69 ~ '5',
+                                            age >= 50  & age <= 59 ~ '4',
+                                             age >= 40  & age <= 49 ~ '3',
+                                             age >= 30  & age <= 39 ~ '2',
+                                             age >= 19  & age <= 29 ~ '1'))
+
+
+df3 %>% 
+  group_by(agegroup) %>% 
+  summarize(across(c("lab_6", "lab_7", "lab_8"), ~ mean(.x, na.rm = TRUE)))
+  
+
+df3<- df3 %>% group_by(agegroup) %>%
+mutate(lab_6 =ifelse(is.na(lab_6),mean(lab_6,na.rm=TRUE),lab_6))
+
+df3<- df3 %>% group_by(agegroup) %>%
+mutate(lab_7 =ifelse(is.na(lab_7),mean(lab_7,na.rm=TRUE),lab_7))
+
+df3<- df3 %>% group_by(agegroup) %>%
+mutate(lab_8 =ifelse(is.na(lab_8),mean(lab_8,na.rm=TRUE),lab_8))
+
+df3 %>% group_by(treatment_variable) %>%
+  summarize(sd(lab_6),sd(lab_7), sd(lab_8))
+
+colmissing<-apply(df3,2,function(x){sum(is.na(x))})
+colmissing
+
+#propensity score matching 
+pscores_model <- glm(treatment_variable ~ sex+age+ lab_1+ lab_6+ lab_7+ lab_8+  other_drugs_1 + other_drugs_2 + other_drugs_3+ other_drugs_4 + other_drugs_5+ other_drugs_6 + other_drugs_7+ other_drugs_8 + diagnosis_1+diagnosis_2+ diagnosis_3+ diagnosis_4+ diagnosis_5+diagnosis_6+ diagnosis_7+ diagnosis_8+diagnosis_9+ diagnosis_10+ diagnosis_11+ diagnosis_12+ diagnosis_13+diagnosis_14+diagnosis_15,family = binomial,data=df3)
+summary (pscores_model)
+
+install.packages('tableone')
+library(tableone)
+xvars <- c('sex','age', 'lab_1','lab_6', 'lab_7', 'lab_8', 'other_drugs_1','other_drugs_2' , 'other_drugs_3', 'other_drugs_4','other_drugs_5', 'other_drugs_6' ,'other_drugs_7','other_drugs_8', 'diagnosis_1','diagnosis_2', 'diagnosis_3', 'diagnosis_4', 'diagnosis_5','diagnosis_6', 'diagnosis_7', 'diagnosis_8','diagnosis_9', 'diagnosis_10', 'diagnosis_11', 'diagnosis_12', 'diagnosis_13','diagnosis_14','diagnosis_15')
+catvars<-c('sex','other_drugs_1','other_drugs_2','other_drugs_3','other_drugs_4' ,'other_drugs_5', 'other_drugs_6' ,'other_drugs_7','other_drugs_8','diagnosis_1','diagnosis_2', 'diagnosis_3', 'diagnosis_4', 'diagnosis_5','diagnosis_6', 'diagnosis_7', 'diagnosis_8','diagnosis_9', 'diagnosis_10', 'diagnosis_11', 'diagnosis_12', 'diagnosis_13','diagnosis_14','diagnosis_15')
+
+table1 <- CreateTableOne(vars = xvars,strata = "treatment_variable",data = df3,factorVars= catvars)
+ print(table1, smd = TRUE)
+
+ 
+ library(MatchIt)
+ pscores_model<-as.formula(pscores_model)
+ 
+#exact maching
+match1 <- matchit(pscores_model, method="exact",data=df3)
+
+
+#nearest neighbor matching
+match2 <- matchit(pscores_model, method="nearest",data=df3)
+bal.tab(match2,m.threshold=0.1)
+match2 <- match.data(match2)
+table_match2 <- CreateTableOne(vars = xvars,strata = "treatment_variable",data = match2,factorVars=catvars,test = FALSE)
+print(table_match2, smd = TRUE)
+
+#nearest neighbor matching,caliper=0.2
+match3 <- matchit(pscores_model, method="nearest", caliper = 0.2,data=df3)
+match3 <- match.data(match3)
+table_match3 <- CreateTableOne(vars = xvars,strata = "treatment_variable",data = match3,factorVars=catvars,test = FALSE)
+print(table_match3, smd = TRUE)
+
+#nearest neighbor matching,caliper=0.1
+match4 <- matchit(pscores_model, method="nearest",caliper=0.1,data=df3)
+install.packages('cobalt')
+library(cobalt)
+bal.tab(match4,m.threshold=0.1)
+v<-data.frame(c('sex','age', 'lab_1', 'lab_6', 'lab_7', 'lab_8', 'other_drugs_1','other_drugs_2' , 'other_drugs_3', 'other_drugs_4','other_drugs_5', 'other_drugs_6' ,'other_drugs_7','other_drugs_8', 'diagnosis_1','diagnosis_2', 'diagnosis_3', 'diagnosis_4', 'diagnosis_5','diagnosis_6','diagnosis_7', 'diagnosis_8','diagnosis_9', 'diagnosis_10', 'diagnosis_11', 'diagnosis_12', 'diagnosis_13','diagnosis_14','diagnosis_15'))
+#Covariate balance for all variables can be displayed in a Love plot
+love.plot(bal.tab(match4,m.threshold=0.1),state='mean.diffs',var.names=v,abs=F)
+match4 <- match.data(match4)
+table_match4 <- CreateTableOne(vars = xvars,strata = "treatment_variable",data = match4,factorVars=catvars,test = FALSE)
+print(table_match4, smd = TRUE)
+
+#full matching; some are SMD is over 0.1
+#match5 <- matchit(pscores_model, method="full",data=df3)
+#match5 <- match.data(match5)
+#table_match5 <- CreateTableOne(vars = xvars,strata = "treatment_variable",data = match5,test = FALSE)
+#print(table_match5, smd = TRUE)
+
+#check for imbalance between the matched dataset: t-test for continous variable and chi-square test for categorical variable
+res <- t.test(lab_8~treatment_variable,data=match4,var.equal = TRUE)
+res
+
+chisq.test(match4$treatment_variable, match4$sex, correct=FALSE)
+
+match4 %>%
+   count(bleeding_event)
+
+# Kaplan-Meier plot
+library(survival)
+library(survminer)
+match4 <- subset(match4, select = -c(agegroup))
+km_fit <- survfit(Surv(duration_in_years, bleeding_event) ~ treatment_variable, data=match4)
+print(km_fit, print.rmean=TRUE)
+summary(km_fit , times = c(0.1*(1:20)))
+ggsurvplot(km_fit, data = match4,conf.int = TRUE,xlab = "duration in years",legend.labs = c("Drug A", "Drug B"), risk.table = TRUE,risk.table.height = 0.2,pval = TRUE)
+
+#log-rank test: survival different between drug A& B is not statistically different
+survdiff(Surv(duration_in_years, bleeding_event) ~ treatment_variable, data = match4) 
+
+table(match4$bleeding_event)
+
+#cumulative hazard plot
+ggsurvplot(km_fit, conf.int = TRUE,risk.table.col = "strata", ggtheme = theme_bw(), fun = "cumhaz",legend.labs = c("Drug A", "Drug B"),risk.table = TRUE)
+          
+#Cox Model A: univariate 
+uni.cox <-  with(match4, coxph(Surv(duration_in_years, bleeding_event) ~ treatment_variable))
+uni.cox
+install.packages('gtsummary')
+library(gtsummary)
+uni.cox %>% 
+  gtsummary::tbl_regression(exp = TRUE) 
+anova(uni.cox)
+
+#Testing Proportional hazard assumption
+cox.zph(uni.cox, transform="km", global=TRUE)
+
+
+# Cox Model B: mutlivariate
+mutli.cox <- coxph(Surv(duration_in_years, bleeding_event) ~treatment_variable+ sex+age+ lab_1+lab_6+ lab_7+ lab_8+  other_drugs_1 + other_drugs_2 + other_drugs_3+ other_drugs_4 + other_drugs_5+ other_drugs_6 +  other_drugs_7+other_drugs_8 + diagnosis_1+diagnosis_2+ diagnosis_3+ diagnosis_4+ diagnosis_5+diagnosis_6+ diagnosis_7+ diagnosis_8+diagnosis_9+ diagnosis_10+ diagnosis_11+ diagnosis_12+ diagnosis_13+diagnosis_14+diagnosis_15, data =  match4)
+summary(mutli.cox)
+
+#stepwise reduction 
+cox.red <-stats::step(mutli.cox)
+
+#reduced CPH to increase the estimation precision
+cox.red <- coxph(cox.red, data = match4) 
+summary(cox.red)
+
+
+#checking for Proportional Hazards Assumption with schoenfeld's test (diagnosis_7 and 8 have  p-value <0.05, so it violate the assumption)
+
+cox.zph(cox.red, transform="km", global=TRUE)
+
+
+#stratified diagnosis 7
+cox.strata <- coxph(Surv(duration_in_years, bleeding_event) ~treatment_variable + age + lab_1 + lab_7 +lab_8 + other_drugs_2 + other_drugs_3 + other_drugs_7 + other_drugs_8 + diagnosis_2 + diagnosis_3 + diagnosis_6 + strata(diagnosis_7) + strata(diagnosis_8) + diagnosis_10 + diagnosis_11 + diagnosis_12 + diagnosis_13 + diagnosis_14, data = match4)
+summary(cox.strata) 
+survfit(cox.strata)
+
+test.ph1= cox.zph(cox.strata)
+test.ph1
+
+#create new data to assess the impact of the treatment on the estimated survival probability
+treatment_df <- with(match4,data.frame(treatment_variable = c(0,1), 
+                          age=rep(mean(age, na.rm = TRUE), 2),
+                          lab_1 = rep(mean(lab_1, na.rm =TRUE), 2),
+                          lab_7 = rep(mean(lab_7, na.rm =TRUE), 2),
+                          lab_8 = rep(mean(lab_8, na.rm =TRUE), 2),
+                          other_drugs_2 = c(1, 1),
+                          other_drugs_3 = c(1, 1),
+                          other_drugs_7 = c(1, 1),
+                          other_drugs_8 = c(1, 1),
+                          diagnosis_2=  c(1, 1),
+                          diagnosis_3=  c(1, 1),
+                          diagnosis_6 =  c(1, 1),
+                          diagnosis_7 =  c(1, 1),
+                          diagnosis_8 =  c(1, 1),
+                          diagnosis_10=  c(1, 1),
+                          diagnosis_11=  c(1, 1),
+                          diagnosis_12=  c(1, 1),
+                          diagnosis_13=  c(1, 1),
+                          diagnosis_14=  c(1, 1)))
+treatment_df
+
+
+ggsurvplot(survfit(cox.strata, newdata = treatment_df), data=match4, conf.int = TRUE,legend.labs=c("Drug A", "Drug B"),ggtheme = theme_minimal())
+
+#create new data to assess the impact of the diagnsis 12 on the estimated survival probability
+D12_df <- with(match4,data.frame(diagnosis_12 = c(0,1), 
+                           treatment_variable=c(1,1),
+                          age=rep(mean(age, na.rm = TRUE), 2),
+                          lab_1 = rep(mean(lab_1, na.rm =TRUE), 2),
+                          lab_7 = rep(mean(lab_7, na.rm =TRUE), 2),
+                          lab_8 = rep(mean(lab_8, na.rm =TRUE), 2),
+                          other_drugs_2 = c(1, 1),
+                          other_drugs_3 = c(1, 1),
+                          other_drugs_7 = c(1, 1),
+                          other_drugs_8 = c(1, 1),
+                          diagnosis_2=  c(1, 1),
+                          diagnosis_3=  c(1, 1),
+                          diagnosis_6 =  c(1, 1),
+                          diagnosis_7 =  c(1, 1),
+                          diagnosis_8 =  c(1, 1),
+                          diagnosis_10=  c(1, 1),
+                          diagnosis_11=  c(1, 1),
+                          diagnosis_13=  c(1, 1),
+                          diagnosis_14=  c(1, 1)))
+D12_df
+
+
+ggsurvplot(survfit(cox.strata, newdata = D12_df), data=match4, legend.labs=c('Negative','Positive'),conf.int = TRUE,ggtheme = theme_minimal())
+
